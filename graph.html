@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Homework 2 Graph</title>
+    <style>
+        .link {
+            stroke: gray;
+            stroke-width: .8px;
+        }
+
+        .node circle {
+            fill: white;
+            stroke: #000;
+            stroke-width: .9px;
+        }
+        .node text {
+            font-size: xx-small;
+        }
+
+    </style>
+
+    <script src="d3.v3.js"></script>
+</head>
+<body>
+
+<form>
+    Layout:
+    <label><input type="radio" name="layout" value="ordinal" checked="checked"> Ordinal Layout</label>
+    <label><input type="radio" name="layout" value="linear"> Linear</label>
+    <label><input type="radio" name="layout" value="scatterplot"> Scatterplot</label>
+    <label><input type="radio" name="layout" value="circular"> Circular</label>
+    <label><input type="radio" name="layout" value="force_directed"> Force Directed</label>
+    <label><input type="radio" name="layout" value="horizontal_groups"> Force Directed Horizontal Groups</label>
+    <label><input type="radio" name="layout" value="circular_groups"> Force Directed Circular Groups</label>
+    <label><input type="radio" name="layout" value="nested_circular"> Nested Circular</label>
+</form>
+
+<form>
+    <label for="dim_x">X Dimension: </label>
+    <select id="dim_x">
+        <option value="population" selected="selected">Population</option>
+        <option value="gdp">GDP</option>
+        <option value="longitude">Longitude</option>
+        <option value="latitude">Latitude</option>
+    </select>
+
+    <label for="dim_y">Y/Pie Ordering Dimension: </label>
+    <select id="dim_y">
+        <option value="population">Population</option>
+        <option value="gdp" selected="selected">GDP</option>
+        <option value="longitude">Longitude</option>
+        <option value="latitude">Latitude</option>
+    </select>
+</form>
+
+<form>
+    Links:
+    <label><input type="checkbox" id="show_links"> Show Links</label>
+    <label><input type="checkbox" id="use_links"> Use Links in Force Layout</label>
+</form>
+
+
+<script>
+    var margin ={top: 10, bottom: 10, left: 10, right: 10};
+    var p = {
+        margin: margin,
+        size: {
+            width: (900 - margin.left - margin.right),
+            height: (900 - margin.top - margin.bottom)
+        },
+        //the different layout along with their function implementing it and properties
+        layouts: {
+            ordinal: {
+                f : ordinal_ranking,
+                forceBased : false,
+                hasXDimension: false,
+                hasYDimension: true
+            },
+            linear:  {
+                f : linear_scale,
+                forceBased : false,
+                hasXDimension: false,
+                hasYDimension: true
+            },
+            scatterplot:  {
+                f : scatter_plot,
+                forceBased : false,
+                hasXDimension: true,
+                hasYDimension: true
+            },
+            circular:  {
+                f : circular,
+                forceBased : false,
+                hasXDimension: false,
+                hasYDimension: true
+            },
+            force_directed:  {
+                f : force_directed,
+                forceBased : true,
+                hasXDimension: false,
+                hasYDimension: false
+            },
+            horizontal_groups:  {
+                f : force_groups_directed,
+                forceBased : true,
+                hasXDimension: false,
+                hasYDimension: false
+            },
+            circular_groups:  {
+                f : force_circular_directed,
+                forceBased : true,
+                hasXDimension: false,
+                hasYDimension: false
+            },
+            nested_circular:  {
+                f : nested_circular,
+                forceBased : false,
+                hasXDimension: false,
+                hasYDimension: true
+            }
+        },
+
+        settings: {
+            activeLayout: null,
+
+            show_links: false,
+            use_links_in_force : false,
+
+            x : 'population',
+            y : 'gdp',
+
+            year: 2012
+        },
+
+        svg: {
+            g_links: null,
+            g_nodes: null
+        },
+
+        graph : {
+            nodes: [],
+            links: []
+        }
+    };
+    //set the default active layout
+    p.settings.activeLayout = p.layouts.ordinal;
+
+
+    // Generate the force layout
+    var force = d3.layout.force()
+            .size([p.size.width, p.size.height]);
+
+
+    //#########################################################################
+    // data loading
+    //#########################################################################
+
+
+    d3.json('data/countries_1995_2012.json', function(error, data) {
+        p.graph.nodes = flattenAndSelectYears(data);
+
+        p.graph.links = createLinks(p.graph.nodes);
+
+        initVis();
+        update();
+    });
+
+    /**
+     * flatten the given complex data structure such that it will look like the countries_2012.json file by inlining common properties and flatten the array
+     **/
+    function flattenAndSelectYears(data) {
+        var flat = [];
+
+        //for each country
+        data.forEach(function(country) {
+            //for each year in each country
+            country.years.forEach(function(year) {
+                if (year.year !== p.settings.year) { //skip wrong years
+                    return;
+                }
+                //extend the year object with the common properties stored just once in the country object
+                Object.keys(country).forEach(function(prop) {
+                    year[prop] = country[prop];
+                });
+
+                //array of all related country ~ inverse view on top_partners
+                year.relatedTo = [ year.country_id];
+
+                //add it to the final flat array
+                flat.push(year);
+            })
+        });
+
+        return flat;
+    }
+
+    function createLinks(nodes) {
+        //create a country_id lookup
+        var lookup = d3.map(nodes, getter('country_id'));
+
+        var links = [];
+        nodes.forEach(function(d) {
+            d.top_partners.forEach(function(p) {
+                var otherCountry = lookup.get(p.country_id);
+                if (otherCountry) { //is a valid country
+                    p.source = d;
+                    p.target = otherCountry;
+                    //store a list of related to country ids for quicker lookup of trading partners
+                    //~ incoming edge list
+                    otherCountry.relatedTo.push(d.country_id);
+
+                    links.push(p);
+                }
+            })
+        });
+        return links;
+    }
+
+    //#########################################################################
+    // init Vis
+    //#########################################################################
+
+    function initVis() {
+        var svg = d3.select("body").append("svg")
+                .attr("width", p.size.width + p.margin.left + p.margin.right)
+                .attr("height", p.size.height + p.margin.top + p.margin.bottom);
+
+        var g = svg.append('g').attr('transform', 'translate('+ p.margin.left+','+ p.margin.top+')');
+        p.svg.g_links = g.append('g');
+        p.svg.g_nodes = g.append('g');
+    }
+
+
+    //#########################################################################
+    // layouts
+    //#########################################################################
+
+    function ordinal_ranking() {
+        var copy = p.graph.nodes.slice(); //work on copy avoiding changing the node order
+
+        var rankBy = getter(p.settings.y);
+
+        //sort data
+        copy = copy.sort(function(a, b) {
+            return d3.ascending(rankBy(a), rankBy(b));
+        });
+        //create an ordinal scale of the ordered data
+        var scale = d3.scale.ordinal().domain(copy.map(getter('name'))).rangeRoundPoints([0, p.size.height]);
+
+        //do a layout step
+        p.graph.nodes.forEach(function (d) {
+            d.x = 30;
+            d.y = scale(d.name);
+        });
+    }
+    function linear_scale() {
+        var getY = getter(p.settings.y);
+        var domain = d3.extent(p.graph.nodes, getY);
+        var scale = d3.scale.linear().domain(domain).range([0, p.size.height]);
+
+        //do a layout step
+        p.graph.nodes.forEach(function (d) {
+            d.x = 30;
+            d.y = scale(getY(d));
+        });
+    }
+    function scatter_plot() {
+        var getX = getter(p.settings.x);
+        var getY = getter(p.settings.y);
+        var xscale = d3.scale.linear().domain(d3.extent(p.graph.nodes, getX)).range([0, p.size.width]);
+        var yscale = d3.scale.linear().domain(d3.extent(p.graph.nodes, getY)).range([0, p.size.height]);
+        //do a layout step
+        p.graph.nodes.forEach(function (d) {
+            d.x = xscale(getX(d));
+            d.y = yscale(getY(d));
+        });
+    }
+
+    /**
+     * performs the pie layout on the given node and properties
+     * @param nodes: the nodes to layout
+     * @param sortBy : an accessor of the to sorting property
+     * @param circle_center: the center of the circle to shift the nodes
+     * @param r: the radius of the circle
+     **/
+    function performPieLayout(nodes, sortBy, circle_center, r) {
+        var arc = d3.svg.arc().outerRadius(r);
+        var pie = d3.layout.pie()
+                .sort(function (a, b) {
+                    return d3.ascending(sortBy(a),sortBy(b));
+                })
+                .value(function () {
+                    return 1;
+                });
+
+        pie(nodes).forEach(function(wrapped_nodes) {
+            // Needed to calculate the centroid
+            wrapped_nodes.innerRadius = 0;
+            wrapped_nodes.outerRadius = r;
+            var centroid = arc.centroid(wrapped_nodes);
+            //do the layout step
+            var d = wrapped_nodes.data;
+            //the pie layout computes its layout relatively to the circle center
+            //add the center to align the whole positions
+            d.x = centroid[0] + circle_center.x;
+            d.y = centroid[1] + circle_center.y;
+        });
+    }
+
+    function circular() {
+        var r = Math.min(p.size.width, p.size.height) / 2;
+
+        var circle_center = {
+            x : p.size.width/2,
+            y : p.size.height/2
+        };
+        performPieLayout(p.graph.nodes, getter(p.settings.y), circle_center, r);
+
+    }
+    function force_directed() {
+        //nothing special to do
+        return function() {
+
+        }
+    }
+
+    function force_groups_directed() {
+        var continents = getAllContinents();
+        var scale = d3.scale.ordinal().domain(continents).rangeRoundPoints([20, p.size.width-20]);
+
+        function pushNodes(alpha) {
+            p.graph.nodes.forEach(function (d) {
+                //compute the foci pont
+                var fociX = scale(d.continent);
+                //compute the difference between the current and the target position
+                var dx = fociX - d.x;
+                //shift it a bit to the target position
+                d.x += dx * alpha * 0.1;
+            });
+        }
+
+        return pushNodes;
+    }
+    function force_circular_directed() {
+        var continent2pos = computeCircularContinentsPositions();
+        function pushNodes(alpha) {
+            p.graph.nodes.forEach(function (d) {
+                var foci = continent2pos[d.continent];
+
+                var dx = foci.x - d.x;
+                d.x += dx * alpha * 0.1;
+
+                var dy = foci.y - d.y;
+                d.y += dy * alpha * 0.1;
+            });
+        }
+        return pushNodes;
+    }
+    function nested_circular() {
+        var continent2pos = computeCircularContinentsPositions();
+
+        var r = Math.min(p.size.height, p.size.width) / 4;
+
+        var sortBy = getter(p.settings.y);
+
+        //group by continent
+        var nested = d3.nest().key(getter('continent')).entries(p.graph.nodes);
+
+        //for each continent to a pie with the center is the continents position
+        nested.forEach(function (group) {
+            var continent = group.key;
+            var circle_center = continent2pos[continent];
+            var countries_in_continent = group.values;
+            performPieLayout(countries_in_continent, sortBy, circle_center, r);
+        });
+    }
+
+
+    /**
+     * retur na lookup of the continents position in a circle
+     * */
+    function computeCircularContinentsPositions() {
+        var r = Math.min(p.size.height, p.size.width) / 2;
+
+        var circle_center = {
+            x : p.size.width/2,
+            y : p.size.height/2
+        };
+
+        //get all continents and map them to a more complex structure containing x and y
+        var continents = getAllContinents().map(function(continent) {
+            return {
+                continent: continent,
+                x : 0,
+                y: 0
+            };
+        });
+        performPieLayout(continents, getter('continent'), circle_center, r);
+
+        //convert the layouted positions to a lookup table
+        var continent2pos = {};
+        continents.forEach(function(d) {
+            continent2pos[d.continent] = d;
+        });
+        return continent2pos;
+    }
+
+    //#########################################################################
+    // update
+    //#########################################################################
+
+
+    function update() {
+        bindVis();
+        layoutAndUpdateVis();
+    }
+
+    function bindVis() {
+        bindLinks(p.settings.show_links ? p.graph.links : []);
+        bindNodes(p.graph.nodes);
+    }
+
+    function bindLinks(linksData) {
+        var links = p.svg.g_links.selectAll('.link').data(linksData);
+
+        var linksEnter = links.enter().append('line').attr('class', function(d) {
+            //special add a class cid<country_id> of the source country for quicker access
+            return 'link cid' + d.source.country_id;
+        });
+        linksEnter.append('title');
+
+        links.select('title').text(function(d) {
+            return d.source.name + ' -> ' + d.total_export + ' -> ' + d.target.name;
+        });
+
+        links.exit().remove();
+    }
+
+    function bindNodes(nodesData) {
+        var nodes = p.svg.g_nodes.selectAll('.node').data(nodesData);
+        var nodesEnter = nodes.enter().append('g')
+                .attr('class', function(d) {
+                    //store all country ids as cid<country_id> for which I'm connected with
+                    return 'node cid'+ d.relatedTo.join(' cid');
+                });
+        nodesEnter.append('circle').attr('r', 5).on({
+            mouseenter : onNodeMouseEnter,
+            mouseleave : onNodeMouseLeave
+        });
+        nodesEnter.append('text').attr({
+            dx : 10,
+            dy : 0
+        });
+
+        nodes.select('text').text(getter('name'));
+    }
+
+    /**
+     * triggers an animated update of all node and link positions
+     * @param duration animation time
+     */
+    function graph_update(duration) {
+        if (p.settings.show_links) {
+            p.svg.g_links.selectAll('.link').transition().duration(duration).attr({
+                x1: function (d) {
+                    return d.target.x;
+                },
+                y1: function (d) {
+                    return d.target.y;
+                },
+                x2: function (d) {
+                    return d.source.x;
+                },
+                y2: function (d) {
+                    return d.source.y;
+                }
+            });
+        }
+
+        p.svg.g_nodes.selectAll('.node').transition().duration(duration)
+                .attr("transform", function (d) {
+                    return "translate(" + d.x + "," + d.y + ")";
+                });
+    }
+
+    function layoutAndUpdateVis() {
+        var actLayout = p.settings.activeLayout;
+
+        //enable / disable the selects upon layout
+        d3.select('#dim_x').attr('disabled', actLayout.hasXDimension ? null : 'disabled');
+        d3.select('#dim_y').attr('disabled', actLayout.hasYDimension ? null : 'disabled');
+
+        d3.select('#use_links').attr('disabled', actLayout.forceBased ? null : 'disabled');
+
+        if (actLayout.forceBased) { // a force based layout?
+            //to the layout step and returning a function containing a tick pusher
+            var tickPusher = actLayout.f();
+
+            force.nodes(p.graph.nodes).links(p.settings.use_links_in_force ? p.graph.links : []);
+
+            force.on('tick', function(e) {
+                tickPusher(e.alpha);
+                graph_update(0);
+            }).start();
+        } else {
+            //static layout
+            force.stop();
+            actLayout.f();
+            graph_update(500);
+        }
+    }
+
+    //#########################################################################
+    // interactive part
+    //#########################################################################
+
+    d3.selectAll('input[name="layout"]').on('click', function() {
+        var value = d3.select(this).property('value');
+        var checked = d3.select(this).property('checked');
+        if (checked) {
+            p.settings.activeLayout = p.layouts[value];
+            update();
+        }
+    });
+
+    d3.select('#dim_x').on('change', function() {
+        var value = d3.select(this).property('value');
+        p.settings.x = value;
+        update();
+    });
+    d3.select('#dim_y').on('change', function() {
+        var value = d3.select(this).property('value');
+        p.settings.y = value;
+        update();
+    });
+    d3.select('#show_links').on('change', function() {
+        var checked = d3.select(this).property('checked');
+        p.settings.show_links = checked;
+        update();
+    });
+    d3.select('#use_links').on('change', function() {
+        var checked = d3.select(this).property('checked');
+        p.settings.use_links_in_force = checked;
+        update();
+    });
+
+    function onNodeMouseEnter(d) {
+        var related_to_class = '.cid'+ d.country_id;
+        //use the related to classed to fast select related nodes
+        //hide not related ones
+        d3.selectAll('.node:not(' +related_to_class+')').transition().duration(100)
+                .style('opacity',0.1);
+        //set a color for the selected ones
+        d3.selectAll('.node' +related_to_class).transition().duration(100)
+                .style('opacity',1)
+                .select('circle')
+                .style('fill',function(k) { return k === d ? 'red' : 'blue'});
+        //hide all not related links
+        d3.selectAll('.link:not('+related_to_class+')').transition().duration(100)
+                .style('opacity',0.01);
+    }
+    function onNodeMouseLeave(d) {
+        //reset all nodes and links
+        d3.selectAll('.node').transition().duration(100)
+                .style('opacity',1).select('circle').style('fill',null);
+        d3.selectAll('.link').transition()
+                .duration(100).style('opacity',1);
+    }
+
+
+
+    //#########################################################################
+    // utilities
+    //#########################################################################
+
+    function getter(name) {
+        return function(d) { return d[name];};
+    }
+
+
+    function getAllContinents() {
+        return  d3.set(p.graph.nodes.map(getter('continent'))).values();
+    }
+
+</script>
+</body>
+</html>
